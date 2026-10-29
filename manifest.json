@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "DR전표 자동입력 (연세대 미래캠퍼스 재무팀)",
+  "description": "엑셀 목록으로 [매출/수입] 세금계산서/계산서/기타[DR] 화면을 자동 입력합니다.",
+  "version": "0.3.0",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://yserp.yonsei.ac.kr/*",
+    "https://yep.yonsei.ac.kr/*",
+    "https://gwgw.yonsei.ac.kr/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "DR전표 자동입력 패널 열기"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://yserp.yonsei.ac.kr/sap/bc/webdynpro/sap/ZWFI0001*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://gwgw.yonsei.ac.kr/*outProcess.do*"
+      ],
+      "js": [
+        "gw.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://yep.yonsei.ac.kr/irj/portal*"
+      ],
+      "js": [
+        "portal.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

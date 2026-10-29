@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>DR전표 자동입력</title>
+<style>
+  * { box-sizing: border-box; }
+  html { color-scheme: light; background: #fff; }
+  body { background: #fff; font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; font-size: 13px; margin: 0; padding: 12px; color: #1f2937; }
+  h1 { font-size: 15px; margin: 0 0 10px; }
+  .box { border: 1px solid #d1d5db; border-radius: 6px; padding: 10px; margin-bottom: 10px; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  label { white-space: nowrap; }
+  select, input[type=number] { padding: 3px 4px; font-size: 13px; }
+  select { max-width: 100%; }
+  input[type=number] { width: 64px; }
+  button { padding: 5px 10px; font-size: 13px; border: 1px solid #9ca3af; border-radius: 4px; background: #f9fafb; cursor: pointer; }
+  button.primary { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: #6b7280; font-size: 12px; }
+  .warn { color: #b45309; }
+  .err { color: #b91c1c; }
+  .ok { color: #047857; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { border-bottom: 1px solid #e5e7eb; padding: 4px 3px; text-align: left; vertical-align: top; }
+  th { background: #f3f4f6; position: sticky; top: 0; }
+  td.num { text-align: right; white-space: nowrap; }
+  .st { white-space: nowrap; font-weight: bold; }
+  .st-완료 { color: #047857; } .st-오류 { color: #b91c1c; } .st-입력중, .st-생성중 { color: #1d4ed8; }
+  .st-검토대기 { color: #b45309; } .st-건너뜀 { color: #6b7280; }
+  tr.current { background: #eff6ff; }
+  #tableWrap { max-height: 45vh; overflow: auto; }
+  #log { max-height: 18vh; overflow: auto; font-family: Consolas, monospace; font-size: 11px; white-space: pre-wrap; background: #f9fafb; padding: 6px; border-radius: 4px; }
+  #banner { padding: 8px; border-radius: 4px; margin-bottom: 8px; display: none; }
+  #banner.show { display: block; background: #fef3c7; border: 1px solid #f59e0b; }
+</style>
+</head>
+<body>
+<h1>DR전표 자동입력 <span class="muted">v0.3.0</span> <button id="btnManual" style="float:right;font-size:12px;padding:3px 8px">사용설명서</button></h1>
+
+<div id="banner"></div>
+
+<div class="box">
+  <div class="row">
+    <input type="file" id="file" accept=".xlsx,.xls">
+  </div>
+  <div id="fileInfo" class="muted">엑셀 양식(DR전표_입력양식.xlsx)의 [입력] 시트를 읽습니다.</div>
+  <div id="validation"></div>
+</div>
+
+<div class="box">
+  <div class="row">
+    <label>모드
+      <select id="mode">
+        <option value="temp">임시전표 자동생성</option>
+        <option value="semi">입력만 (이후 처리는 직접)</option>
+      </select>
+    </label>
+  </div>
+  <div class="row">
+    <label>이번에 처리할 건수 <input type="number" id="limit" value="3" min="1"></label>
+    <span class="muted">처음엔 3건으로 시험해 보세요</span>
+  </div>
+  <div class="row">
+    <button id="btnStart" class="primary" disabled>시작</button>
+    <button id="btnStop" disabled>중지</button>
+    <button id="btnExport" disabled>결과 엑셀 저장</button>
+    <button id="btnReset" disabled>진행상태 초기화</button>
+  </div>
+  <div class="muted">시작 전: 포털에 로그인만 해두세요. DR 입력화면은 자동으로 엽니다. 실행 중에는 포털 화면을 건드리지 마세요.</div>
+</div>
+
+<div class="box">
+  <div id="summary" class="muted">대기 중</div>
+  <div id="tableWrap">
+    <table>
+      <thead><tr><th>문서</th><th>거래처</th><th>총금액</th><th>상태</th><th>메시지</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="box">
+  <div class="muted">로그</div>
+  <div id="log"></div>
+</div>
+
+<script src="lib/xlsx.full.min.js"></script>
+<script src="sidepanel.js"></script>
+</body>
+</html>
