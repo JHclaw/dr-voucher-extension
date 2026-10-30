@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "DR전표 자동입력 (연세대 미래캠퍼스 재무팀)",
   "description": "엑셀 목록으로 [매출/수입] 세금계산서/계산서/기타[DR] 화면을 자동 입력합니다.",
-  "version": "0.3.0",
+  "version": "0.4.3",
   "permissions": [
     "sidePanel",
     "storage",

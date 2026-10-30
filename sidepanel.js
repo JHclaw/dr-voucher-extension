@@ -7,11 +7,11 @@ const EVIDENCE = ['계산서발급(A1)', '세금계산서발급(AA)', '세금무
 
 // 엑셀 머리글 → 내부 키 (괄호 안 설명, 공백, * 는 무시)
 const COLS = {
-  '문서번호': 'docNo', '발행구분': 'issueType', '증빙구분': 'evidence', '청구/영수': 'claimType', '증빙일': 'date',
+  '문서번호': 'docNo', '부서코드': 'dept', '발행구분': 'issueType', '증빙구분': 'evidence', '청구/영수': 'claimType', '증빙일': 'date',
   '총금액': 'total', '적요': 'summary', '사업자등록번호': 'bizNo', '담당자': 'contact', '연락처': 'phone', 'E-MAIL': 'email',
   '청구계좌': 'account', '계정사유': 'reason', '계정과목': 'acct', '자금': 'fund', '금액': 'amount', '적요사항': 'lineText'
 };
-const HEADER_KEYS = ['issueType', 'evidence', 'claimType', 'date', 'total', 'summary', 'bizNo', 'contact', 'phone', 'email', 'account'];
+const HEADER_KEYS = ['dept', 'issueType', 'evidence', 'claimType', 'date', 'total', 'summary', 'bizNo', 'contact', 'phone', 'email', 'account'];
 const normH = (s) => String(s ?? '').replace(/\(.*?\)/g, '').replace(/[\s*]/g, '').toUpperCase();
 
 let wbSource = null;   // { aoa, headerRow, sheetName }
@@ -31,10 +31,14 @@ let gwAutoClose = false; // 임시전표 모드에서 결재문서 창 즉시 �
 let gwRound = 0; // 결재문서작성 대기중인 문서번호 (그룹웨어 문서ID 연결용)
 
 function log(s) {
-  const t = new Date().toTimeString().slice(0, 8);
+  const n = new Date();
+  const t = n.toTimeString().slice(0, 8) + '.' + Math.floor(n.getMilliseconds() / 100); // 0.1초 단위
   $('log').textContent += `[${t}] ${s}\n`;
   $('log').scrollTop = $('log').scrollHeight;
 }
+// 소요시간 표시: 1234 → '1.2s', [['부서', 2100], ...] → '부서 2.1s · ...'
+const sec = (ms) => (ms / 1000).toFixed(1) + 's';
+const fmtSteps = (arr) => (arr || []).map(([n, ms]) => n + ' ' + sec(ms)).join(' · ');
 function banner(s) { const b = $('banner'); b.textContent = s || ''; b.className = s ? 'show' : ''; }
 
 // ---------- 값 정리 ----------
@@ -78,6 +82,7 @@ async function loadFile(file) {
     if (!docNo) continue;
     if (docNo.startsWith('예시')) continue;
     const header = {
+      dept: toText(get('dept')).replace(/\s/g, ''), // 비우면 화면 기본 부서 사용
       issueType: toText(get('issueType')) || '정발행',
       evidence: toText(get('evidence')),
       claimType: toText(get('claimType')) || '청구',
@@ -119,6 +124,7 @@ async function loadFile(file) {
 
 function validate(d) {
   const e = d.errors;
+  if (d.dept && !/^\d{4}$/.test(d.dept)) e.push(`부서코드 '${d.dept}' (숫자 4자리 아님)`);
   if (!d.evidence) e.push('증빙구분 없음');
   else if (!EVIDENCE.some((x) => x.replace(/\s/g, '').includes(d.evidence.replace(/\s/g, '')))) e.push(`증빙구분 '${d.evidence}' 확인`);
   if (!['정발행', '역발행'].some((x) => d.issueType.includes(x))) e.push(`발행구분 '${d.issueType}' 확인`);
@@ -146,7 +152,7 @@ function render(currentNo) {
     const msg = r.msg || [...d.errors, ...d.warnings].join(' / ');
     const tr = document.createElement('tr');
     if (d.docNo === currentNo) tr.className = 'current';
-    tr.innerHTML = `<td>${esc(d.docNo)}</td><td>${esc(d.bizNo)}</td><td class="num">${Number(d.total || 0).toLocaleString()}</td>` +
+    tr.innerHTML = `<td>${esc(d.docNo)}${d.dept ? '<br><span class="muted">부서 ' + esc(d.dept) + '</span>' : ''}</td><td>${esc(d.bizNo)}</td><td class="num">${Number(d.total || 0).toLocaleString()}</td>` +
       `<td class="st st-${esc(status)}">${esc(status)}</td><td class="${d.errors.length ? 'err' : d.warnings.length ? 'warn' : ''}">${esc(msg)}${r.gwDocId ? ' [그룹웨어 ' + esc(r.gwDocId) + ']' : ''}</td>`;
     tb.appendChild(tr);
   }
@@ -252,25 +258,60 @@ async function makeTemp(tab, d) {
   gwWatch = true;
   gwAutoClose = true;
   const round = ++gwRound;
+  const tStart = Date.now();
   try {
     const sub = await send(tab, { type: 'submit', lines: d.lines.length });
     if (!sub.ok) return { status: '오류', msg: '결재문서작성 단계: ' + sub.error + (sub.step ? ' (' + sub.step + ')' : '') };
     log('[' + d.docNo + '] 결재문서작성 클릭');
 
-    const gw = await waitGw(sub.dialog ? 8000 : 30000);
-    if (!gw) log('[' + d.docNo + '] 결재문서 창이 열리지 않음');
-
+    // 안내메시지는 뜨는 즉시 [확인]. 결재문서 창은 감지되는 즉시 자동으로 닫히므로(noteGw) 먼저 기다리지 않는다.
+    // 메시지가 아직 없으면 메시지나 결재문서 창 중 먼저 오는 것을 기다린다 (최대 30초).
     const texts = [];
-    for (let k = 0; k < 3; k++) {
-      const c = await send(tab, { type: 'confirmMessage', maxMs: k === 0 ? 10000 : 4000 });
-      if (!c.ok || !c.dialog) break;
-      texts.push(c.dialog);
-      log('[' + d.docNo + '] 메시지: ' + c.dialog);
-      if (!c.clicked) break;
+    const t0 = Date.now();
+    let gwAt = 0;
+    let firstSeenAt = 0, firstClickedAt = 0, lastDoneAt = 0;
+    for (;;) {
+      // 메시지를 확인한 뒤 뒤이은 메시지가 있는지는 0.5초만 확인 (확인 후 화면 정리를 이미 기다렸으므로)
+      const c = await send(tab, { type: 'confirmMessage', maxMs: texts.length ? 500 : 1000 });
+      if (c.ok && c.dialog) {
+        if (!firstSeenAt) { firstSeenAt = c.seenAt || 0; firstClickedAt = c.clickedAt || 0; }
+        if (c.doneAt) lastDoneAt = c.doneAt;
+        texts.push(c.dialog);
+        log('[' + d.docNo + '] 메시지: ' + c.dialog);
+        if (!c.clicked || texts.length >= 3) break;
+        continue; // 이어지는 메시지가 있으면 바로 처리
+      }
+      if (!c.ok) await sleep(300);
+      if (gwSeen.size && !gwAt) gwAt = Date.now();
+      if (texts.length) break;                       // 메시지 확인 끝 (1초 동안 다음 메시지 없음)
+      if (gwAt && Date.now() - gwAt > 10000) break;  // 창은 떴는데 메시지가 10초간 없음
+      if (Date.now() - t0 > 30000) break;            // 아무것도 없음
     }
     const all = texts.join(' / ');
     const vno = findVoucherNo(all, d);
-    const extra = { voucherNo: vno, gwDocId: gw ? gw.docId : '', sapMsg: all };
+
+    // 결재문서 창이 아직 안 떴으면 조금 더 기다림 (확인 클릭 뒤에 열리는 경우 대비, 열리면 바로 닫힘)
+    let gw = [...gwSeen.values()][0] || null;
+    if (!gw && !(ERR_RE.test(all) && !vno)) gw = await waitGw(vno ? 3000 : 8000);
+    if (!gw) log('[' + d.docNo + '] 결재문서 창이 열리지 않음');
+
+    // 생성 단계별 소요시간
+    const st = sub.t || {};
+    const msgAt = st.msgAt || firstSeenAt;
+    const base = st.yesAt || st.clickAt;
+    const steps = [];
+    if (st.selMs != null) steps.push(['행선택', st.selMs]);
+    if (st.askAt && st.clickAt) steps.push(['작성클릭→확인창', st.askAt - st.clickAt]);
+    if (st.yesAt && st.askAt) steps.push(['확인창→예', st.yesAt - st.askAt]);
+    if (msgAt && base) steps.push([(st.yesAt ? '예' : '작성클릭') + '→안내메시지', msgAt - base]);
+    if (firstClickedAt && msgAt) steps.push(['메시지→확인클릭', Math.max(0, firstClickedAt - msgAt)]);
+    if (lastDoneAt && firstClickedAt) steps.push(['확인후정리', lastDoneAt - firstClickedAt]);
+    if (gw && gw.t && st.clickAt) steps.push(['결재문서창(작성클릭 후)', gw.t - st.clickAt]);
+    steps.push(['생성합계', Date.now() - tStart]);
+    const genSteps = fmtSteps(steps);
+    log('[' + d.docNo + '] 생성 단계시간: ' + genSteps);
+
+    const extra = { voucherNo: vno, gwDocId: gw ? gw.docId : '', sapMsg: all, genSteps };
     if (!vno && ERR_RE.test(all)) return { status: '오류', msg: all, extra };
     if (!gw && !texts.length) return { status: '오류', msg: '결재문서작성 후 그룹웨어 창도 안내메시지도 없음 (팝업 차단 여부 확인)', extra };
     if (gw || vno) return { status: '완료', msg: '임시전표 생성' + (vno ? ' ' + vno : '') + (all ? ' | ' + all : ''), extra };
@@ -307,6 +348,7 @@ async function run() {
     if (prev === '완료' || prev === '확인필요') continue;
     if (d.errors.length) { await setRes(d, '건너뜀', '엑셀 입력오류: ' + d.errors.join(' / ')); continue; }
     done++;
+    const tDoc = Date.now();
 
     // 1. 빈 화면 확보 (아니면 메뉴를 다시 열어 초기화)
     let w = await waitClean(tab, 4000);
@@ -318,11 +360,16 @@ async function run() {
     }
 
     // 2. 입력
-    await setRes(d, '입력중', '');
-    log('[' + d.docNo + '] 입력 시작 (' + d.lines.length + '행)');
+    const tFill = Date.now();
+    await setRes(d, '입력중', '', { prepMs: tFill - tDoc, fillMs: null, genMs: null, totalMs: null, fillSteps: '', genSteps: '' });
+    log('[' + d.docNo + '] 입력 시작 (' + d.lines.length + '행)' + (tFill - tDoc >= 1000 ? ' / 화면 준비 ' + sec(tFill - tDoc) : ''));
     const r = await send(tab, { type: 'fillDoc', doc: d });
+    const fillMs = Date.now() - tFill;
+    const fillSteps = fmtSteps(r.timing);
+    if (r.timing) log('[' + d.docNo + '] 입력 단계시간: ' + (fillSteps || '-') + (r.ok ? '' : ' → 멈춘 단계: ' + (r.step || '?')) + ' (입력 합계 ' + sec(fillMs) + ')');
+    const times = { fillMs, fillSteps };
     if (!r.ok) {
-      await setRes(d, '오류', r.error + (r.step ? ' (단계: ' + r.step + ')' : ''));
+      await setRes(d, '오류', r.error + (r.step ? ' (단계: ' + r.step + ')' : ''), { ...times, totalMs: Date.now() - tDoc });
       log('[' + d.docNo + '] 오류: ' + r.error);
       banner('입력 중 오류로 멈췄습니다. 엑셀을 고친 뒤 다시 불러와 [시작]을 누르면 이 건부터 다시 진행합니다 (화면은 자동 초기화).');
       break;
@@ -332,22 +379,28 @@ async function run() {
     // 3-A. 입력만: 사용자가 직접 처리할 때까지 대기
     if (mode === 'semi') {
       gwSeen.clear(); gwWatch = true; gwAutoClose = false; gwRound++;
-      await setRes(d, '검토대기', '화면을 확인한 뒤 직접 처리하세요. 화면이 비워지면(또는 메뉴를 다시 열면) 다음 건으로 넘어갑니다.', { log: r.log });
+      await setRes(d, '검토대기', '화면을 확인한 뒤 직접 처리하세요. 화면이 비워지면(또는 메뉴를 다시 열면) 다음 건으로 넘어갑니다.', { log: r.log, ...times });
+      const tManual = Date.now();
       const w2 = await waitClean(tab, 60 * 60 * 1000);
       gwWatch = false;
-      if (w2 !== 'clean') { await setRes(d, '오류', w2 === 'stopped' ? '중지됨 (처리 여부 직접 확인)' : '시간 초과'); break; }
+      const manual = { genSteps: '직접처리(검토~화면 비움) ' + sec(Date.now() - tManual), totalMs: Date.now() - tDoc };
+      if (w2 !== 'clean') { await setRes(d, '오류', w2 === 'stopped' ? '중지됨 (처리 여부 직접 확인)' : '시간 초과', manual); break; }
       const gw = [...gwSeen.values()][0];
-      if (gw) await setRes(d, '완료', '결재문서작성 확인됨', { gwDocId: gw.docId });
-      else await setRes(d, '확인필요', '화면은 비워졌지만 결재문서작성을 확인하지 못함. 실제 생성 여부를 확인하세요.');
-      log('[' + d.docNo + '] ' + results[d.docNo].status);
+      if (gw) await setRes(d, '완료', '결재문서작성 확인됨', { gwDocId: gw.docId, ...manual });
+      else await setRes(d, '확인필요', '화면은 비워졌지만 결재문서작성을 확인하지 못함. 실제 생성 여부를 확인하세요.', manual);
+      log('[' + d.docNo + '] ' + results[d.docNo].status + ' / 준비 ' + sec(tFill - tDoc) + ' · 입력 ' + sec(fillMs) + ' · ' + manual.genSteps + ' · 총 ' + sec(manual.totalMs));
       continue;
     }
 
     // 3-B. 임시전표 자동생성
     await setRes(d, '생성중', '');
+    const tGen = Date.now();
     const t = await makeTemp(tab, d);
-    await setRes(d, t.status, t.msg, { log: r.log, ...(t.extra || {}) });
+    const genMs = Date.now() - tGen;
+    const totalMs = Date.now() - tDoc;
+    await setRes(d, t.status, t.msg, { log: r.log, ...(t.extra || {}), ...times, genMs, totalMs });
     log('[' + d.docNo + '] ' + t.status + ' ' + t.msg);
+    log('[' + d.docNo + '] 소요: 준비 ' + sec(tFill - tDoc) + ' · 입력 ' + sec(fillMs) + ' · 생성 ' + sec(genMs) + ' · 총 ' + sec(totalMs));
     if (t.status !== '완료') {
       banner(t.status === '오류'
         ? '임시전표 생성 단계에서 멈췄습니다. [전표 통합 관리]에서 이 건이 생성됐는지 확인하세요. 생성됐다면 다시 시작하기 전에 엑셀에서 이 건을 빼주세요.'
@@ -365,13 +418,16 @@ function exportResults() {
   const out = aoa.map((r) => [...r]);
   const width = Math.max(...out.map((r) => r.length));
   out.forEach((r) => { while (r.length < width) r.push(''); });
-  out[headerRow].push('처리결과', '임시전표번호', '처리메시지', '그룹웨어문서ID', '처리시각');
+  out[headerRow].push('처리결과', '임시전표번호', '처리메시지', '그룹웨어문서ID', '처리시각',
+    '준비(초)', '입력(초)', '생성(초)', '총소요(초)', '입력 단계별', '생성 단계별');
+  const s1 = (ms) => (typeof ms === 'number' ? Math.round(ms / 100) / 10 : '');
   const byRow = {};
   docs.forEach((d) => d.rows.forEach((r) => { byRow[r] = d; }));
   for (let r = headerRow + 1; r < out.length; r++) {
     const d = byRow[r];
     const res = d ? results[d.docNo] || {} : {};
-    out[r].push(res.status || '', res.voucherNo || '', res.msg || '', res.gwDocId || '', res.at ? new Date(res.at).toLocaleString('ko-KR') : '');
+    out[r].push(res.status || '', res.voucherNo || '', res.msg || '', res.gwDocId || '', res.at ? new Date(res.at).toLocaleString('ko-KR') : '',
+      s1(res.prepMs), s1(res.fillMs), s1(res.genMs), s1(res.totalMs), res.fillSteps || '', res.genSteps || '');
   }
   const ws = XLSX.utils.aoa_to_sheet(out);
   const wb = XLSX.utils.book_new();
@@ -416,6 +472,17 @@ $('btnStart').addEventListener('click', () => run());
 $('btnManual').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('manual.html') }));
 $('btnStop').addEventListener('click', () => { stopReq = true; log('중지 요청: 현재 단계가 끝나면 멈춥니다'); });
 $('btnExport').addEventListener('click', exportResults);
+// 로그를 txt 파일로 저장 (패널을 닫으면 로그가 사라지므로)
+$('btnLogSave').addEventListener('click', () => {
+  const text = $('log').textContent;
+  if (!text) return;
+  const n = new Date();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\ufeff' + text.replace(/\n/g, '\r\n')], { type: 'text/plain;charset=utf-8' }));
+  a.download = `DR전표_로그_${n.getFullYear()}${pad(n.getMonth() + 1)}${pad(n.getDate())}_${pad(n.getHours())}${pad(n.getMinutes())}.txt`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
 $('btnReset').addEventListener('click', async () => {
   if (!confirm('이 파일의 진행상태(완료 표시)를 모두 지울까요? 이미 결재문서를 만든 건이 다시 처리될 수 있습니다.')) return;
   results = {}; await saveResults(true); render(); log('진행상태 초기화 (이 파일의 전표만)');
